@@ -1,0 +1,375 @@
+---
+title: "Kommuneendringer"
+output: html_notebook
+---
+
+Her er koden for å lage konverteringstabell mellom gamle og nye kommunekoder.
+
+```{r}
+#biblioteker
+library(tidyverse)
+```
+
+# Endringstabell 2019 - 2020
+
+Målet her er å lage en tabell som kan brukes til å aggregere kommuner fra 2019-struktur til 2020-struktur. Dvs. at jeg trenger en kolonne med alle kommunekoder i 2019, og en kolonne med hvilken kode denne kommunen hadde i 2020.
+
+En svakhet med lista til SSB, er at 21-koder mangler. Hvor finner jeg den offisielle kilden til disse? I spesielle regionskoder-tabellen.
+
+```{r}
+#data
+#disse kan jeg også vurdere å erstatte med spørringer mot SSBs KLASS-API
+kommunekoder_2019 <- read_delim("data/kommunendringer/ssb_kommunekoder_2019.csv", ";", escape_double = FALSE, 
+                                locale = locale(decimal_mark = ",", grouping_mark = "|", encoding = "ISO-8859-1"),
+                                trim_ws = TRUE) %>%
+  select(kommunenummer = code, kommunenavn = name)
+
+kommunekoder_2020 <- read_delim("data/kommunendringer/ssb_kommunekoder_2020.csv", ";", escape_double = FALSE, 
+                                locale = locale(decimal_mark = ",", grouping_mark = "|", encoding = "ISO-8859-1"),
+                                trim_ws = TRUE) %>%
+  select(kommunenummer = code, kommunenavn = name)
+
+endringstabell_19_20 <- read_delim("data/kommunendringer/kommuner_med_endringer_fra2019_til2020.csv", 
+                                   ";", escape_double = FALSE, 
+                                   locale = locale(decimal_mark = ",", grouping_mark = "|", encoding = "ISO-8859-1"),
+                                   trim_ws = TRUE) %>%
+  separate(kommuner_2019, into = c("kommunenummer_2019", NA), sep = 4, remove = FALSE) %>%
+  separate(kommuner_2020, into = c("kommunenummer_2020", NA), sep = 4, remove = FALSE)
+
+```
+
+```{r}
+#1 ta 2019 kommuner
+df = select(kommunekoder_2019, kommunenummer_2019 = kommunenummer, kommunenavn_2019 = kommunenavn) %>%
+  #2 finn de som har endringer og legg på 2020-kode for disse
+  left_join(., select(endringstabell_19_20, kommunenummer_2019, kommunenummer_2020, splittes)) %>%
+  #for alle kommuner i denne lista som ikke har en endring, så er kommunekoden 2020 det samme som i 2019
+  mutate(kommunenummer_2020 = ifelse(is.na(kommunenummer_2020) == TRUE, kommunenummer_2019, kommunenummer_2020),
+         splittes = ifelse(is.na(splittes) == TRUE, 0, splittes)
+         ) %>%
+  #legger også på 2020-navnet på kommunen
+  left_join(., select(kommunekoder_2020, kommunenummer_2020 = kommunenummer, kommunenavn_2020 = kommunenavn))
+
+
+#lager en kolonne med en endringsmerknad
+
+#kommuner der vi har flere kommunekoder for 2019 enn for 2020, er slått sammen.
+#kommuner der vi har flere kommunekoder for 2020 enn for 2019, er splittet
+#kommuner som har samme antall nummer, og samme nummer, er uendret
+#kommuner som har samme antall nummer, og annet nummer, er endret. 
+
+df = add_count(df, kommunenummer_2020, name = "antall_koder_2019") %>%
+  add_count(., kommunenummer_2019, name = "antall_koder_2020") %>%
+  mutate(.,
+         slatt_sammen = ifelse(antall_koder_2019>1, "slått sammen fra 2019 til 2020", NA),
+         splittet_tekst = ifelse(antall_koder_2020>1, "splittet fra 2019 til 2020", NA), 
+         uendret = ifelse((antall_koder_2019+antall_koder_2020==2)&(kommunenummer_2020==kommunenummer_2019), "uendret fra 2019 til 2020", NA),
+         kun_endret_nummer = ifelse((antall_koder_2019+antall_koder_2020==2)&(kommunenummer_2020!=kommunenummer_2019), "kun endret nummer fra 2019 til 2020", NA)
+  ) %>%
+  unite(., "endringsmerknad_19_20", slatt_sammen:kun_endret_nummer, sep = " - ", remove = TRUE, na.rm = TRUE) %>%
+  select(., -splittes, -antall_koder_2019, -antall_koder_2020)
+
+#testen er da om distincte kommunenummer 2020 på denne lista er alle kommunenummer som finnes i 2020
+test = distinct(df, kommunenummer_2020)
+sum(parse_number(test$kommunenummer_2020)) == sum(parse_number(kommunekoder_2020$kommunenummer))
+
+```
+
+```{r}
+#eksport
+write.csv2(df, "data/kommunendringer/fra_2019kommuner_til_2020kommuner.csv", row.names = FALSE)
+
+#rydder opp
+rm(df, endringstabell_19_20, kommunekoder_2020, test, kommuneummer_2020)
+
+```
+# Endringstabell 2018 - 2019
+
+Hvilke endringer i kommunestrukturen/koding av kommunenummer skjedde fra Kommuneinndeling 2018 til Kommuneinndeling 2019?
+
+```{r}
+#data
+#disse kan jeg også vurdere å erstatte med spørringer mot SSBs KLASS-API
+
+#kommunekoder for det første året / året med gammel standard
+kommunekoder_2018 <- read_delim("data/kommunendringer/ssb_kommunekoder_2018.csv", ";", escape_double = FALSE, 
+                                    col_types = cols(validFrom = col_skip(), validTo = col_skip()), 
+                                    locale = locale(decimal_mark = ",", grouping_mark = "|", encoding = "ISO-8859-1"),
+                                    trim_ws = TRUE) %>%
+  select(kommunenummer = code, kommunenavn = name)
+
+#kommunekoder for det andre året / året med den nye standarden
+kommunekoder_2019 <- read_delim("data/kommunendringer/ssb_kommunekoder_2019.csv", ";", escape_double = FALSE, 
+                                locale = locale(decimal_mark = ",", grouping_mark = "|", encoding = "ISO-8859-1"),
+                                trim_ws = TRUE) %>%
+  select(kommunenummer = code, kommunenavn = name)
+
+#tabell for endringer - hentes ved å se på den nye standardens endringstabell, invertert
+#vil kun ha nummer her, skrivemåten kan avvike?
+endringstabell_18_19 <- read_delim("data/kommunendringer/kommuner_med_endringer_fra2018_til2019.csv", 
+                                   ";", escape_double = FALSE, 
+                                   locale = locale(decimal_mark = ",", grouping_mark = "|", encoding = "ISO-8859-1"),
+                                   trim_ws = TRUE) %>%
+  separate(kommuner_2018, into = c("kommunenummer_2018", NA), sep = 4, remove = FALSE) %>%
+  separate(kommuner_2019, into = c("kommunenummer_2019", NA), sep = 4, remove = FALSE)
+
+```
+
+```{r}
+#1 ta kommuner i år 1
+df = select(kommunekoder_2018, kommunenummer_2018 = kommunenummer, kommunenavn_2018 = kommunenavn) %>%
+  #2 finn de som har endringer og legg på kode for år 2 for disse
+  left_join(., select(endringstabell_18_19, kommunenummer_2018, kommunenummer_2019)) %>%
+  #for alle kommuner i denne lista som ikke har en endring, så er kommunekoden i år 2 det samme som i år 1
+  mutate(kommunenummer_2019 = ifelse(is.na(kommunenummer_2019) == TRUE, kommunenummer_2018, kommunenummer_2019),
+         ) %>%
+  #legger også på 2020-navnet på kommunen - navneendringer er også en ting
+  left_join(., select(kommunekoder_2019, kommunenummer_2019 = kommunenummer, kommunenavn_2019 = kommunenavn))
+
+
+#lager en kolonne med en endringsmerknad
+
+#kommuner der vi har flere kommunekoder for år 1 enn for år 2, er slått sammen.
+#kommuner der vi har flere kommunekoder for år 2 enn for år 1, er splittet
+#kommuner som har samme antall nummer, og samme nummer, er uendret
+#kommuner som har samme antall nummer, og annet nummer, er endret. 
+
+df = add_count(df, kommunenummer_2019, name = "antall_koder_2018") %>%
+  add_count(., kommunenummer_2018, name = "antall_koder_2019") %>%
+  mutate(.,
+         slatt_sammen = ifelse(antall_koder_2018>1, "slått sammen fra 2018 til 2019", NA),
+         splittet_tekst = ifelse(antall_koder_2019>1, "splittet fra 2018 til 2019", NA), 
+         uendret = ifelse((antall_koder_2018+antall_koder_2019==2)&(kommunenummer_2019==kommunenummer_2018), "uendret fra 2018 til 2019", NA),
+         kun_endret_nummer = ifelse((antall_koder_2018+antall_koder_2019==2)&(kommunenummer_2019!=kommunenummer_2018), "kun endret nummer fra 2018 til 2019", NA)
+  ) %>%
+  unite(., "endringsmerknad_18_19", slatt_sammen:kun_endret_nummer, sep = " - ", remove = TRUE, na.rm = TRUE) %>%
+  select(., -antall_koder_2018, -antall_koder_2019)
+
+#testen er da om distincte kommunenummer i år 2 på denne lista er alle kommunenummer som finnes i år 2
+#testes ved å summere dem.
+test = distinct(df, kommunenummer_2019)
+sum(parse_number(test$kommunenummer_2019)) == sum(parse_number(kommunekoder_2019$kommunenummer))
+
+```
+
+```{r}
+#eksport
+write.csv2(df, "data/kommunendringer/fra_2018kommuner_til_2019kommuner.csv", row.names = FALSE)
+
+#rydder opp
+rm(df, endringstabell_18_19, kommunekoder_2019, test)
+
+```
+
+# Endringstabell 2017 - 2018
+
+Hvilke endringer i kommunestrukturen ble gjort fra 2017 til 2018? Noen sammenslåinger i 07, og sammenslåing av Sør- og Nord-Trøndelag til 50 Trøndelag. 3 navnebytter.
+
+```{r}
+#data
+#disse kan jeg også vurdere å erstatte med spørringer mot SSBs KLASS-API
+
+#kommunekoder for det første året / året med gammel standard - 2017
+kommunekoder_2017 <- read_delim("data/kommunendringer/ssb_kommunekoder_2017.csv", ";", escape_double = FALSE, 
+                                    locale = locale(decimal_mark = ",", grouping_mark = "|", encoding = "ISO-8859-1"),
+                                    trim_ws = TRUE) %>%
+  select(kommunenummer = code, kommunenavn = name)
+
+#kommunekoder for det andre året / året med den nye standarden - 2018
+kommunekoder_2018 <- read_delim("data/kommunendringer/ssb_kommunekoder_2018.csv", ";", escape_double = FALSE, 
+                                    locale = locale(decimal_mark = ",", grouping_mark = "|", encoding = "ISO-8859-1"),
+                                    trim_ws = TRUE) %>%
+  select(kommunenummer = code, kommunenavn = name)
+
+#tabell for endringer - hentes ved å se på den nye standardens endringstabell, invertert
+#vil kun ha nummer her, skrivemåten kan avvike?
+endringstabell_17_18 <- read_delim("data/kommunendringer/kommuner_med_endringer_fra2017_til2018.csv", 
+                                   ";", escape_double = FALSE, 
+                                   locale = locale(decimal_mark = ",", grouping_mark = "|", encoding = "ISO-8859-1"),
+                                   trim_ws = TRUE) %>%
+  separate(kommuner_2017, into = c("kommunenummer_2017", NA), sep = 4, remove = FALSE) %>%
+  separate(kommuner_2018, into = c("kommunenummer_2018", NA), sep = 4, remove = FALSE)
+
+```
+
+```{r}
+#1 ta kommuner i år 1
+df = select(kommunekoder_2017, kommunenummer_2017 = kommunenummer, kommunenavn_2017 = kommunenavn) %>%
+  #2 finn de som har endringer og legg på kode for år 2 for disse
+  left_join(., select(endringstabell_17_18, kommunenummer_2017, kommunenummer_2018)) %>%
+  #for alle kommuner i denne lista som ikke har en endring, så er kommunekoden i år 2 det samme som i år 1
+  mutate(kommunenummer_2018 = ifelse(is.na(kommunenummer_2018) == TRUE, kommunenummer_2017, kommunenummer_2018),
+         ) %>%
+  #legger også på nye navnet på kommunen - navneendringer er også en ting
+  left_join(., select(kommunekoder_2018, kommunenummer_2018 = kommunenummer, kommunenavn_2018 = kommunenavn))
+
+
+#lager en kolonne med en endringsmerknad
+
+#kommuner der vi har flere kommunekoder for år 1 enn for år 2, er slått sammen.
+#kommuner der vi har flere kommunekoder for år 2 enn for år 1, er splittet
+#kommuner som har samme antall nummer, og samme nummer, er uendret
+#kommuner som har samme antall nummer, og annet nummer, er endret. 
+
+df = add_count(df, kommunenummer_2018, name = "antall_koder_2017") %>%
+  add_count(., kommunenummer_2017, name = "antall_koder_2018") %>%
+  mutate(.,
+         slatt_sammen = ifelse(antall_koder_2017>1, "slått sammen fra 2017 til 2018", NA),
+         splittet_tekst = ifelse(antall_koder_2018>1, "splittet fra 2017 til 2018", NA), 
+         uendret = ifelse((antall_koder_2017+antall_koder_2018==2)&(kommunenummer_2018==kommunenummer_2017), "uendret fra 2017 til 2018", NA),
+         kun_endret_nummer = ifelse((antall_koder_2017+antall_koder_2018==2)&(kommunenummer_2018!=kommunenummer_2017), "kun endret nummer fra 2017 til 2018", NA)
+  ) %>%
+  unite(., "endringsmerknad_17_18", slatt_sammen:kun_endret_nummer, sep = " - ", remove = TRUE, na.rm = TRUE) %>%
+  select(., -antall_koder_2017, -antall_koder_2018)
+
+#testen er da om distincte kommunenummer i år 2 på denne lista er alle kommunenummer som finnes i år 2
+#testes ved å summere dem.
+test = distinct(df, kommunenummer_2018)
+sum(parse_number(test$kommunenummer_2018)) == sum(parse_number(kommunekoder_2018$kommunenummer))
+
+```
+
+```{r}
+#eksport
+write.csv2(df, "data/kommunendringer/fra_2017kommuner_til_2018kommuner.csv", row.names = FALSE)
+
+#rydder opp
+rm(df, endringstabell_17_18, kommunekoder_2018, test)
+
+```
+
+# Endringstabell 2013 - 2017
+
+Hvilke endringer ble gjort fra 2013-standarden til 2017-standaarden? Ttre kommuner ble slått sammen til nye Sandefjord, og noen navneendringer i Troms og Finmark.
+
+```{r}
+#data
+#disse kan jeg også vurdere å erstatte med spørringer mot SSBs KLASS-API
+
+#kommunekoder for det første året / året med gammel standard - 2013
+kommunekoder_2013 <- read_delim("data/kommunendringer/ssb_kommunekoder_2013.csv", ";", escape_double = FALSE, 
+                                    locale = locale(decimal_mark = ",", grouping_mark = "|", encoding = "ISO-8859-1"),
+                                    trim_ws = TRUE) %>%
+  select(kommunenummer = code, kommunenavn = name)
+
+#kommunekoder for det andre året / året med den nye standarden - 2017
+kommunekoder_2017 <- read_delim("data/kommunendringer/ssb_kommunekoder_2017.csv", ";", escape_double = FALSE, 
+                                    locale = locale(decimal_mark = ",", grouping_mark = "|", encoding = "ISO-8859-1"),
+                                    trim_ws = TRUE) %>%
+  select(kommunenummer = code, kommunenavn = name)
+
+#tabell for endringer - hentes ved å se på den nye standardens endringstabell, invertert
+#vil kun ha nummer her, skrivemåten kan avvike?
+endringstabell_13_17 <- read_delim("data/kommunendringer/kommuner_med_endringer_fra2013_til2017.csv", 
+                                   ";", escape_double = FALSE, 
+                                   locale = locale(decimal_mark = ",", grouping_mark = "|", encoding = "ISO-8859-1"),
+                                   trim_ws = TRUE) %>%
+  separate(kommuner_2013, into = c("kommunenummer_2013", NA), sep = 4, remove = FALSE) %>%
+  separate(kommuner_2017, into = c("kommunenummer_2017", NA), sep = 4, remove = FALSE)
+
+```
+
+```{r}
+#1 ta kommuner i år 1
+df = select(kommunekoder_2013, kommunenummer_2013 = kommunenummer, kommunenavn_2013 = kommunenavn) %>%
+  #2 finn de som har endringer og legg på kode for år 2 for disse
+  left_join(., select(endringstabell_13_17, kommunenummer_2013, kommunenummer_2017)) %>%
+  #for alle kommuner i denne lista som ikke har en endring, så er kommunekoden i år 2 det samme som i år 1
+  mutate(kommunenummer_2017 = ifelse(is.na(kommunenummer_2017) == TRUE, kommunenummer_2013, kommunenummer_2017),
+         ) %>%
+  #legger også på nye navnet på kommunen - navneendringer er også en ting
+  left_join(., select(kommunekoder_2017, kommunenummer_2017 = kommunenummer, kommunenavn_2017 = kommunenavn))
+
+
+#lager en kolonne med en endringsmerknad
+
+#kommuner der vi har flere kommunekoder for år 1 enn for år 2, er slått sammen.
+#kommuner der vi har flere kommunekoder for år 2 enn for år 1, er splittet
+#kommuner som har samme antall nummer, og samme nummer, er uendret
+#kommuner som har samme antall nummer, og annet nummer, er endret. 
+
+df = add_count(df, kommunenummer_2017, name = "antall_koder_2013") %>%
+  add_count(., kommunenummer_2013, name = "antall_koder_2017") %>%
+  mutate(.,
+         slatt_sammen = ifelse(antall_koder_2013>1, "slått sammen fra 2013 til 2017", NA),
+         splittet_tekst = ifelse(antall_koder_2017>1, "splittet fra 2013 til 2017", NA), 
+         uendret = ifelse((antall_koder_2013+antall_koder_2017==2)&(kommunenummer_2017==kommunenummer_2013), "uendret fra 2013 til 2017", NA),
+         kun_endret_nummer = ifelse((antall_koder_2013+antall_koder_2017==2)&(kommunenummer_2017!=kommunenummer_2013), "kun endret nummer fra 2013 til 2017", NA)
+  ) %>%
+  unite(., "endringsmerknad_13_17", slatt_sammen:kun_endret_nummer, sep = " - ", remove = TRUE, na.rm = TRUE) %>%
+  select(., -antall_koder_2013, -antall_koder_2017)
+
+#testen er da om distincte kommunenummer i år 2 på denne lista er alle kommunenummer som finnes i år 2
+#testes ved å summere dem.
+test = distinct(df, kommunenummer_2017)
+sum(parse_number(test$kommunenummer_2017)) == sum(parse_number(kommunekoder_2017$kommunenummer))
+
+```
+
+```{r}
+#eksport
+write.csv2(df, "data/kommunendringer/fra_2013kommuner_til_2017kommuner.csv", row.names = FALSE)
+
+#rydder opp
+rm(df, endringstabell_13_17, kommunekoder_2017, kommunekoder_2013, test)
+
+```
+
+
+# Samlet endringstabell fra 2013 til 2020
+
+
+```{r}
+#leser inn endringstabellene
+fra_2013kommuner_til_2017kommuner <- read_delim("data/kommunendringer/fra_2013kommuner_til_2017kommuner.csv", ";", 
+                                                escape_double = FALSE, 
+                                                locale = locale(decimal_mark = ",", grouping_mark = "|", encoding = "ISO-8859-1"),
+                                                trim_ws = TRUE)
+
+fra_2017kommuner_til_2018kommuner <- read_delim("data/kommunendringer/fra_2017kommuner_til_2018kommuner.csv", ";", 
+                                                escape_double = FALSE, 
+                                                locale = locale(decimal_mark = ",", grouping_mark = "|", encoding = "ISO-8859-1"),
+                                                trim_ws = TRUE)
+
+fra_2018kommuner_til_2019kommuner <- read_delim("data/kommunendringer/fra_2018kommuner_til_2019kommuner.csv", ";", 
+                                                escape_double = FALSE, 
+                                                locale = locale(decimal_mark = ",", grouping_mark = "|", encoding = "ISO-8859-1"),
+                                                trim_ws = TRUE)
+
+fra_2019kommuner_til_2020kommuner <- read_delim("data/kommunendringer/fra_2019kommuner_til_2020kommuner.csv", ";", 
+                                                escape_double = FALSE, 
+                                                locale = locale(decimal_mark = ",", grouping_mark = "|", encoding = "ISO-8859-1"),
+                                                trim_ws = TRUE)
+
+#legger de sammen 
+df = full_join(fra_2013kommuner_til_2017kommuner, fra_2017kommuner_til_2018kommuner) %>%
+  full_join(., fra_2018kommuner_til_2019kommuner) %>%
+  full_join(., fra_2019kommuner_til_2020kommuner)
+
+write.csv2(df, "data/kommunendringer/alle_kommunenummer_fra2013_til2020_wide.csv", row.names = FALSE)
+
+```
+
+Det jeg trenger er en tabell der jeg kan slå opp et kommunenummer i en kolonne, og finne ut hva dette nummeret er i 2020 - uavhengig av hvilke endringer det har gjennomgått?
+
+Eksempel: jeg har en tabell med regnskapstall for barnevernet fra 2015-2019. For et gitt kommunenummer, vil jeg vite hva dette nummeret var i 2019.
+
+```{r}
+temp = full_join(fra_2013kommuner_til_2017kommuner, fra_2017kommuner_til_2018kommuner) %>%
+  full_join(., fra_2018kommuner_til_2019kommuner) %>%
+  full_join(., fra_2019kommuner_til_2020kommuner)
+
+test = select(temp, kommunenummer_2019, kommunenavn_2019, historisk_nummer = kommunenummer_2013) %>%
+  bind_rows(., select(temp, kommunenummer_2019, kommunenavn_2019, historisk_nummer = kommunenummer_2017)) %>%
+  bind_rows(., select(temp, kommunenummer_2019, kommunenavn_2019, historisk_nummer = kommunenummer_2018)) %>%
+  distinct(kommunenummer_2019, historisk_nummer, .keep_all = TRUE)
+  
+```
+
+```{r}
+write.csv2(test, "data/kommunendringer/alle_kommunenummer_fra20132019_til2019.csv", row.names = FALSE)
+```
+
+
+
+
